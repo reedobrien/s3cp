@@ -54,7 +54,6 @@ test:
 	CGO_ENABLED=0 go test $(GOPACKAGES)
 
 test-race:
-	# CGO_ENABLED=1 go test -race $(GOPACKAGES)
 	CGO_ENABLED=1 go test -race -coverprofile=coverage.txt -covermode=atomic $(GOPACKAGES)
 	bash <(curl -s https://codecov.io/bash)
 
