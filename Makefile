@@ -50,6 +50,9 @@ lint:
 	echo "go vet..."
 	go vet --all $(GOPACKAGES)
 
+run-push-hook:
+	./_misc/pre-push.bash
+
 test:
 	CGO_ENABLED=0 go test $(GOPACKAGES)
 
