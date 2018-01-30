@@ -1,22 +1,49 @@
-package main
+package s3cp_test
 
 import (
-	"fmt"
-	"path/filepath"
-	"reflect"
-	"runtime"
 	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/service/s3"
+
+	"github.com/reedobrien/checkers"
+	s3cp "github.com/reedobrien/s3cp/lib"
 )
 
-func TestRemoveMe(t *testing.T) {
-	equals(t, RemoveMe(), true)
+func TestNewDefaults(t *testing.T) {
+	api := newDummyAPI(nil, nil)
+	got := s3cp.NewCopier(api)
+
+	checkers.Equals(t, got.PartSize, int64(s3cp.DefaultCopyPartSize))
+	checkers.Equals(t, got.Concurrency, s3cp.DefaultCopyConcurrency)
+	checkers.Equals(t, got.Timeout, s3cp.DefaultCopyTimeout)
 }
 
-// equals fails the test if got is not equal to want.
-func equals(tb testing.TB, got, want interface{}) {
-	if !reflect.DeepEqual(got, want) {
-		_, file, line, _ := runtime.Caller(1)
-		fmt.Printf("\033[31m%s:%d:\n\n\tgot: %#v\n\n\twant: %#v\033[39m\n\n", filepath.Base(file), line, got, want)
-		tb.FailNow()
+func TestNewWithOptions(t *testing.T) {
+	api := newDummyAPI(nil, nil)
+	got := s3cp.NewCopier(api,
+		func(c *s3cp.Copier) { c.PartSize = 100 },
+		func(c *s3cp.Copier) { c.Concurrency = 8 },
+		func(c *s3cp.Copier) { c.Timeout = time.Second },
+	)
+
+	checkers.Equals(t, got.PartSize, int64(100))
+	checkers.Equals(t, got.Concurrency, 8)
+	checkers.Equals(t, got.Timeout, time.Second)
+}
+
+func newDummyAPI(coo *s3.CopyObjectOutput, err error) *dummyAPI {
+	return &dummyAPI{err: err, coo: coo}
+}
+
+type dummyAPI struct {
+	err error
+	coo *s3.CopyObjectOutput
+}
+
+func (d *dummyAPI) CopyObject(in *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
+	if d.err != nil {
+		return nil, d.err
 	}
+	return d.coo, nil
 }
