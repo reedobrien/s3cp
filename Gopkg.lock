@@ -4,8 +4,8 @@
 [[projects]]
   name = "github.com/aws/aws-sdk-go"
   packages = ["aws","aws/awserr","aws/awsutil","aws/client","aws/client/metadata","aws/credentials","aws/endpoints","aws/request","aws/signer/v4","internal/shareddefaults","private/protocol","private/protocol/query","private/protocol/query/queryutil","private/protocol/rest","private/protocol/restxml","private/protocol/xml/xmlutil","service/s3"]
-  revision = "1b176c5c6b57adb03bb982c21930e708ebca5a77"
-  version = "v1.12.70"
+  revision = "0cbaf57ea311890e62f0b01652529295079e9e95"
+  version = "v1.12.71"
 
 [[projects]]
   name = "github.com/go-ini/ini"
@@ -27,6 +27,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "01043493b65f80d10ec7fa66cbdb1623783213380c1167b34b3be1b30b58b486"
+  inputs-digest = "7cd8cf95d47488f7a1d7244b7f3237f3688323729ccd52132e407bbf419c1e87"
   solver-name = "gps-cdcl"
   solver-version = 1

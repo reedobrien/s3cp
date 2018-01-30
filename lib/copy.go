@@ -1,15 +1,19 @@
 package s3cp
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
-
-func removeMe() bool {
-	return true
-}
 
 const (
 	// DefaultCopyPartSize declares the default size of chunks to get copied.
@@ -38,32 +42,16 @@ const (
 
 // API contains the s3 API methods we use in this package for testing.
 type API interface {
-	CopyObject(*s3.CopyObjectInput) (*s3.CopyObjectOutput, error)
-	// CopyObjectWithContext(aws.Context, *s3.CopyObjectInput, ...request.Option) (*s3.CopyObjectOutput, error)
-	// DeleteObject(*s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error)
-	// DeleteObjectWithContext(aws.Context, *s3.DeleteObjectInput, ...request.Option) (*s3.DeleteObjectOutput, error)
-	// HeadObject(*s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
-	// HeadObjectWithContext(aws.Context, *s3.HeadObjectInput, ...request.Option) (*s3.HeadObjectOutput, error)
-	// AbortMultipartUpload(*s3.AbortMultipartUploadInput) (*s3.AbortMultipartUploadOutput, error)
+	CopyObjectWithContext(aws.Context, *s3.CopyObjectInput, ...request.Option) (*s3.CopyObjectOutput, error)
+	DeleteObjectWithContext(aws.Context, *s3.DeleteObjectInput, ...request.Option) (*s3.DeleteObjectOutput, error)
+	HeadObjectWithContext(aws.Context, *s3.HeadObjectInput, ...request.Option) (*s3.HeadObjectOutput, error)
 	// AbortMultipartUploadWithContext(aws.Context, *s3.AbortMultipartUploadInput, ...request.Option) (*s3.AbortMultipartUploadOutput, error)
-	// CreateMultipartUpload(*s3.CreateMultipartUploadInput) (*s3.CreateMultipartUploadOutput, error)
 	// CreateMultipartUploadWithContext(aws.Context, *s3.CreateMultipartUploadInput, ...request.Option) (*s3.CreateMultipartUploadOutput, error)
-	// CompleteMultipartUpload(*s3.CompleteMultipartUploadInput) (*s3.CompleteMultipartUploadOutput, error)
 	// CompleteMultipartUploadWithContext(aws.Context, *s3.CompleteMultipartUploadInput, ...request.Option) (*s3.CompleteMultipartUploadOutput, error)
 }
 
 // CopyInput is a parameter container for Copier.Copy.
 type CopyInput struct {
-	// The key for the copy destination.
-	Key *string
-
-	// The bucket for the copy destination.
-	Bucket *string
-
-	// CopySource is the name of the source bucket and key name of the source
-	// object, separated by a slash (/). Must be URL-encoded.
-	CopySource *string
-
 	// If we should delete the source object on successful copy.
 	Delete bool
 
@@ -78,6 +66,9 @@ type CopyInput struct {
 	// parts copy source ranges. Otherwise we head the source object to get
 	// the size.
 	Size int64
+
+	// COI is an embedded s3.CopyObjectInput struct.
+	COI s3.CopyObjectInput
 }
 
 // NewCopier creates a new Copier instance to copy opbjects concurrently from
@@ -125,17 +116,160 @@ type Copier struct {
 	// up.
 	LeavePartsOnError bool
 
+	// MustSvcForRegion returns a new API for the provided region.
+	MustSvcForRegion func(*string) API
+
 	// The s3 client ot use when copying.
 	S3 API
 
-	// // SrcS3 is the source if set, it is a second region. Needed to delete.
-	// SrcS3 s3iface.S3API
+	// SrcS3 is the source if set, it is a second region. Needed to delete.
+	SrcS3 API
 
 	// RequestOptions to be passed to the individual calls.
 	RequestOptions []request.Option
 }
 
 // Copy copies the source to the destination.
-func (c Copier) Copy(i CopyInput) error {
+func (c Copier) Copy(i CopyInput, opts ...func(*Copier)) error {
+	return c.CopyWithContext(context.Background(), i, opts...)
+}
+
+// CopyWithContext performs Copy with the given context.Context.
+func (c Copier) CopyWithContext(ctx aws.Context, input CopyInput, opts ...func(*Copier)) error {
+	ctx, cancel := context.WithCancel(ctx)
+	c.SrcS3 = c.S3
+	if input.SourceRegion != nil && *input.SourceRegion != "" {
+		c.SrcS3 = c.MustSvcForRegion(input.SourceRegion)
+	}
+
+	impl := copier{in: input, cfg: c, ctx: ctx, cancel: cancel}
+
+	for _, opt := range opts {
+		opt(&impl.cfg)
+	}
+
+	impl.cfg.RequestOptions = append(impl.cfg.RequestOptions, request.WithAppendUserAgent("s3manager"))
+
+	if s, ok := c.S3.(maxRetrier); ok {
+		impl.maxRetries = s.MaxRetries()
+	}
+
+	return impl.copy()
+}
+
+// copier is the struct for the internal implementation of copy.
+type copier struct {
+	sync.Mutex
+	err error
+
+	cfg    Copier
+	cancel context.CancelFunc
+
+	maxRetries int
+	ctx        aws.Context
+
+	contentLength *int64
+	in            CopyInput
+}
+
+func (c *copier) copy() error {
+	c.getContentLength()
+	if err := c.getErr(); err != nil {
+		return err
+	}
+
+	// If there's a request to delete the source copy, do it on exit if there
+	// was no error copying.
+	if c.in.Delete {
+		defer func() {
+			if c.err != nil {
+				return
+			}
+			c.deleteObject()
+		}()
+	}
+
+	if *c.contentLength < c.cfg.PartSize {
+		// It is smaller than part size so just copy.
+		return c.singlePartCopyObject()
+	}
+
 	return nil
+}
+
+func (c *copier) singlePartCopyObject() error {
+	_, err := c.cfg.S3.CopyObjectWithContext(c.ctx, &c.in.COI)
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			log.Printf("failed to copy %q to %q: %s", *c.in.COI.CopySource, *c.in.COI.Bucket+"/"+*c.in.COI.Key, aerr)
+		} else {
+			log.Printf("failed to copy %q to %q: %s", *c.in.COI.CopySource, *c.in.COI.Bucket+"/"+*c.in.COI.Key, err)
+		}
+		return err
+	}
+
+	return nil
+}
+
+func (c *copier) getContentLength() {
+	if c.in.Size > 0 {
+		c.contentLength = aws.Int64(c.in.Size)
+		return
+	}
+
+	info, err := c.objectInfo(c.in.COI.CopySource)
+	if err != nil {
+		c.setErr(err)
+		return
+	}
+	c.contentLength = info.ContentLength
+}
+
+func (c *copier) objectInfo(cs *string) (*s3.HeadObjectOutput, error) {
+	if cs == nil {
+		return nil, errors.New("got nil *string as CopySource")
+	}
+	source := strings.SplitN(*cs, "/", 2)
+	info, err := c.cfg.SrcS3.HeadObjectWithContext(c.ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(source[0]),
+		Key:    aws.String(source[1]),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error getting object info: %s", err)
+	}
+	return info, nil
+}
+
+func (c *copier) deleteObject() {
+	if c.in.COI.CopySource == nil {
+		c.setErr(errors.New("delete requested but copy source is nil"))
+		return
+	}
+	source := strings.SplitN(*c.in.COI.CopySource, "/", 2)
+	_, err := c.cfg.SrcS3.DeleteObjectWithContext(c.ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(source[0]),
+		Key:    aws.String(source[1]),
+	})
+	if err != nil {
+		log.Printf("failed to delete %q: %q", *c.in.COI.CopySource, err)
+	}
+}
+func (c *copier) getErr() error {
+	c.Lock()
+	defer c.Unlock()
+
+	return c.err
+}
+
+func (c *copier) setErr(e error) {
+	c.Lock()
+	defer c.Unlock()
+
+	c.err = e
+}
+
+// maxRetrier provices an interface to MaRetries. This was copied from aws sdk.
+// TODO(ro) 2018-01-30 Remove if part of the s3manager package.
+type maxRetrier interface {
+	MaxRetries() int
 }
