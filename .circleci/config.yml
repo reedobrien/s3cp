@@ -3,7 +3,7 @@ jobs:
     build:
         docker:
             - image: circleci/golang:1.9
-        working_directory: /go/src/github.com/reedobrien/rbp
+        working_directory: /go/src/github.com/reedobrien/s3cp
 
         environment:
             TEST_RESULTS: /tmp/test-results
