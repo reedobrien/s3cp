@@ -3,6 +3,7 @@ package s3cp
 import (
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
@@ -46,8 +47,8 @@ type Copier struct {
 	// // SrcS3 is the source if set, it is a second region. Needed to delete.
 	// SrcS3 s3iface.S3API
 
-	// // RequestOptions to be passed to the individual calls.
-	// RequestOptions []request.Option
+	// RequestOptions to be passed to the individual calls.
+	RequestOptions []request.Option
 }
 
 // NewCopier creates a new Copier instance to copy opbjects concurrently from
@@ -65,4 +66,11 @@ func NewCopier(api API, opts ...func(*Copier)) *Copier {
 	}
 
 	return c
+}
+
+// WithCopierRequestOptions appends to the Copier's API requst options.
+func WithCopierRequestOptions(opts ...request.Option) func(*Copier) {
+	return func(c *Copier) {
+		c.RequestOptions = append(c.RequestOptions, opts...)
+	}
 }

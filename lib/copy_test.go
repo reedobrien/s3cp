@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/reedobrien/checkers"
@@ -30,6 +31,18 @@ func TestNewWithOptions(t *testing.T) {
 	checkers.Equals(t, got.PartSize, int64(100))
 	checkers.Equals(t, got.Concurrency, 8)
 	checkers.Equals(t, got.Timeout, time.Second)
+}
+
+func TestWithCopierRequestOptions(t *testing.T) {
+	api := newDummyAPI(nil, nil)
+	tut := s3cp.NewCopier(api)
+
+	s3cp.WithCopierRequestOptions(
+		func(r *request.Request) { r.RetryCount = 99 },
+		func(r *request.Request) { r.DisableFollowRedirects = true },
+	)(tut)
+
+	checkers.Equals(t, len(tut.RequestOptions), 2)
 }
 
 func newDummyAPI(coo *s3.CopyObjectOutput, err error) *dummyAPI {
