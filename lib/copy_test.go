@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/s3"
 
@@ -18,6 +19,7 @@ func TestNewDefaults(t *testing.T) {
 	checkers.Equals(t, got.PartSize, int64(s3cp.DefaultCopyPartSize))
 	checkers.Equals(t, got.Concurrency, s3cp.DefaultCopyConcurrency)
 	checkers.Equals(t, got.Timeout, s3cp.DefaultCopyTimeout)
+	checkers.Equals(t, got.LeavePartsOnError, false)
 }
 
 func TestNewWithOptions(t *testing.T) {
@@ -26,11 +28,13 @@ func TestNewWithOptions(t *testing.T) {
 		func(c *s3cp.Copier) { c.PartSize = 100 },
 		func(c *s3cp.Copier) { c.Concurrency = 8 },
 		func(c *s3cp.Copier) { c.Timeout = time.Second },
+		func(c *s3cp.Copier) { c.LeavePartsOnError = true },
 	)
 
 	checkers.Equals(t, got.PartSize, int64(100))
 	checkers.Equals(t, got.Concurrency, 8)
 	checkers.Equals(t, got.Timeout, time.Second)
+	checkers.Equals(t, got.LeavePartsOnError, true)
 }
 
 func TestWithCopierRequestOptions(t *testing.T) {
@@ -43,6 +47,21 @@ func TestWithCopierRequestOptions(t *testing.T) {
 	)(tut)
 
 	checkers.Equals(t, len(tut.RequestOptions), 2)
+}
+
+func TestCopy(t *testing.T) {
+	api := newDummyAPI(&s3.CopyObjectOutput{
+		CopyObjectResult: &s3.CopyObjectResult{
+			ETag:         aws.String("etag"),
+			LastModified: aws.Time(time.Date(2005, 7, 1, 9, 30, 00, 00, time.UTC)),
+		},
+	}, nil)
+
+	in := s3cp.CopyInput{}
+
+	tut := s3cp.NewCopier(api)
+	err := tut.Copy(in)
+	checkers.OK(t, err)
 }
 
 func newDummyAPI(coo *s3.CopyObjectOutput, err error) *dummyAPI {
