@@ -46,7 +46,7 @@ type API interface {
 	DeleteObjectWithContext(aws.Context, *s3.DeleteObjectInput, ...request.Option) (*s3.DeleteObjectOutput, error)
 	HeadObjectWithContext(aws.Context, *s3.HeadObjectInput, ...request.Option) (*s3.HeadObjectOutput, error)
 	// AbortMultipartUploadWithContext(aws.Context, *s3.AbortMultipartUploadInput, ...request.Option) (*s3.AbortMultipartUploadOutput, error)
-	// CreateMultipartUploadWithContext(aws.Context, *s3.CreateMultipartUploadInput, ...request.Option) (*s3.CreateMultipartUploadOutput, error)
+	CreateMultipartUploadWithContext(aws.Context, *s3.CreateMultipartUploadInput, ...request.Option) (*s3.CreateMultipartUploadOutput, error)
 	// CompleteMultipartUploadWithContext(aws.Context, *s3.CompleteMultipartUploadInput, ...request.Option) (*s3.CompleteMultipartUploadOutput, error)
 }
 
@@ -168,8 +168,9 @@ type copier struct {
 	maxRetries int
 	ctx        aws.Context
 
-	contentLength *int64
-	in            CopyInput
+	contentLength     *int64
+	MultipartUploadID *string
+	in                CopyInput
 }
 
 func (c *copier) copy() error {
@@ -194,6 +195,27 @@ func (c *copier) copy() error {
 		return c.singlePartCopyObject()
 	}
 
+	err := c.startMultipart()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *copier) startMultipart() error {
+	cmui := &s3.CreateMultipartUploadInput{
+		Bucket: c.in.COI.Bucket,
+		Key:    c.in.COI.Key,
+	}
+	resp, err := c.cfg.S3.CreateMultipartUploadWithContext(c.ctx, cmui)
+	if err != nil {
+		// TODO(ro) 2018-02-06 parse for awserr?
+		c.setErr(err)
+		return err
+	}
+
+	c.MultipartUploadID = resp.UploadId
 	return nil
 }
 

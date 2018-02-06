@@ -2,6 +2,7 @@ package s3cp
 
 import (
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -33,7 +34,7 @@ func TestGetContentLengthProvided(t *testing.T) {
 }
 
 func TestGetContentLengthLookup(t *testing.T) {
-	api := newDummyAPI(func(d *dummyAPI) {
+	api := newDummyAPI("", func(d *dummyAPI) {
 		d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(6))}
 	})
 	tut := copier{
@@ -52,7 +53,7 @@ func TestGetContentLengthLookup(t *testing.T) {
 }
 
 func TestGetContentLengthLookupError(t *testing.T) {
-	api := newDummyAPI(func(d *dummyAPI) {
+	api := newDummyAPI("", func(d *dummyAPI) {
 		d.HooErr = errors.New("boom")
 	})
 	tut := copier{
@@ -71,7 +72,7 @@ func TestGetContentLengthLookupError(t *testing.T) {
 
 func TestObjectInfoNoCopySource(t *testing.T) {
 	// TODO(ro) 2018-02-01 Can this happen?
-	api := newDummyAPI(func(d *dummyAPI) {
+	api := newDummyAPI("", func(d *dummyAPI) {
 		d.HooErr = errors.New("boom")
 	})
 	tut := copier{
@@ -85,8 +86,13 @@ func TestObjectInfoNoCopySource(t *testing.T) {
 	checkers.Equals(t, tut.getErr().Error(), "got nil *string as CopySource")
 }
 
-func newDummyAPI(opts ...func(*dummyAPI)) *dummyAPI {
-	d := &dummyAPI{}
+func newDummyAPI(region string, opts ...func(*dummyAPI)) *dummyAPI {
+	if region == "" {
+		region = "default-region"
+	}
+
+	d := &dummyAPI{region: aws.String(region)}
+
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -94,12 +100,18 @@ func newDummyAPI(opts ...func(*dummyAPI)) *dummyAPI {
 }
 
 type dummyAPI struct {
-	Coo    *s3.CopyObjectOutput
-	CooErr error
-	Doo    *s3.DeleteObjectOutput
-	DooErr error
-	Hoo    *s3.HeadObjectOutput
-	HooErr error
+	region *string
+
+	Cmp      *s3.CreateMultipartUploadOutput
+	CmpCalls int64
+	CmpErr   error
+	CooErr   error
+	Coo      *s3.CopyObjectOutput
+	Hoo      *s3.HeadObjectOutput
+	HooErr   error
+	Doo      *s3.DeleteObjectOutput
+	DooCalls int64
+	DooErr   error
 }
 
 func (d *dummyAPI) CopyObjectWithContext(_ aws.Context, in *s3.CopyObjectInput, opts ...request.Option) (*s3.CopyObjectOutput, error) {
@@ -107,6 +119,14 @@ func (d *dummyAPI) CopyObjectWithContext(_ aws.Context, in *s3.CopyObjectInput, 
 		return nil, d.CooErr
 	}
 	return d.Coo, nil
+}
+
+func (d *dummyAPI) CreateMultipartUploadWithContext(_ aws.Context, in *s3.CreateMultipartUploadInput, ops ...request.Option) (*s3.CreateMultipartUploadOutput, error) {
+	_ = atomic.AddInt64(&d.CmpCalls, 1)
+	if d.CmpErr != nil {
+		return nil, d.CmpErr
+	}
+	return d.Cmp, nil
 }
 
 func (d *dummyAPI) HeadObjectWithContext(ctx aws.Context, in *s3.HeadObjectInput, opts ...request.Option) (*s3.HeadObjectOutput, error) {
@@ -117,8 +137,16 @@ func (d *dummyAPI) HeadObjectWithContext(ctx aws.Context, in *s3.HeadObjectInput
 }
 
 func (d *dummyAPI) DeleteObjectWithContext(ctx aws.Context, in *s3.DeleteObjectInput, opts ...request.Option) (*s3.DeleteObjectOutput, error) {
+	_ = atomic.AddInt64(&d.DooCalls, 1)
 	if d.DooErr != nil {
 		return nil, d.DooErr
 	}
 	return d.Doo, nil
+}
+
+func (d *dummyAPI) Region() string {
+	if d.region == nil {
+		return ""
+	}
+	return *d.region
 }

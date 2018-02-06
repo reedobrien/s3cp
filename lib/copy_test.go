@@ -325,6 +325,75 @@ func TestSinglePartCopyError(t *testing.T) {
 	checkers.Equals(t, err.Error(), "boom")
 	checkers.Assert(t, strings.HasSuffix(buf.String(), "failed to copy \"bucket/key\" to \"abucket/akey\": boom\n"), "missing expected log message")
 }
+
+func TestStartMultipartError(t *testing.T) {
+	api := newDummyAPI("", func(d *dummyAPI) {
+		d.Coo = &s3.CopyObjectOutput{
+			CopyObjectResult: &s3.CopyObjectResult{
+				ETag:         aws.String("etag"),
+				LastModified: aws.Time(time.Date(2005, 7, 1, 9, 30, 00, 00, time.UTC)),
+			},
+		}
+		d.CmpErr = awserr.New("mpboomCode", "mpMsqBoom", errors.New("boomboom"))
+	},
+	)
+
+	in := s3cp.CopyInput{SourceRegion: aws.String("another-region"),
+		COI: s3.CopyObjectInput{
+			CopySource: aws.String("bucket/key"),
+		},
+	}
+
+	tut := s3cp.NewCopier(api,
+		func(c *s3cp.Copier) {
+			c.MustSvcForRegion = func(s *string) s3cp.API {
+				return newDummyAPI(*s, func(d *dummyAPI) {
+					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(s3cp.DefaultCopyPartSize * 2))}
+				})
+			}
+		},
+	)
+
+	err := tut.Copy(in, func(c *s3cp.Copier) { c.Concurrency = 1 })
+
+	checkers.Equals(t, api.CmpCalls, int64(1))
+	checkers.Equals(t, err.Error(), "mpboomCode: mpMsqBoom\ncaused by: boomboom")
+}
+
+func TestMultipartCopy(t *testing.T) {
+	api := newDummyAPI("", func(d *dummyAPI) {
+		d.Coo = &s3.CopyObjectOutput{
+			CopyObjectResult: &s3.CopyObjectResult{
+				ETag:         aws.String("etag"),
+				LastModified: aws.Time(time.Date(2005, 7, 1, 9, 30, 00, 00, time.UTC)),
+			},
+		}
+		d.Cmp = &s3.CreateMultipartUploadOutput{
+			UploadId: aws.String("an-id"),
+		}
+	},
+	)
+
+	in := s3cp.CopyInput{SourceRegion: aws.String("another-region"),
+		COI: s3.CopyObjectInput{
+			CopySource: aws.String("bucket/key"),
+		},
+	}
+
+	tut := s3cp.NewCopier(api,
+		func(c *s3cp.Copier) {
+			c.MustSvcForRegion = func(s *string) s3cp.API {
+				return newDummyAPI(*s, func(d *dummyAPI) {
+					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(s3cp.DefaultCopyPartSize * 2))}
+				})
+			}
+		},
+	)
+
+	err := tut.Copy(in, func(c *s3cp.Copier) { c.Concurrency = 1 })
+	checkers.OK(t, err)
+}
+
 func newDummyAPI(region string, opts ...func(*dummyAPI)) *dummyAPI {
 	if region == "" {
 		region = "default-region"
@@ -341,6 +410,9 @@ func newDummyAPI(region string, opts ...func(*dummyAPI)) *dummyAPI {
 type dummyAPI struct {
 	region *string
 
+	Cmp      *s3.CreateMultipartUploadOutput
+	CmpCalls int64
+	CmpErr   error
 	CooErr   error
 	Coo      *s3.CopyObjectOutput
 	Hoo      *s3.HeadObjectOutput
@@ -355,6 +427,14 @@ func (d *dummyAPI) CopyObjectWithContext(_ aws.Context, in *s3.CopyObjectInput, 
 		return nil, d.CooErr
 	}
 	return d.Coo, nil
+}
+
+func (d *dummyAPI) CreateMultipartUploadWithContext(_ aws.Context, in *s3.CreateMultipartUploadInput, ops ...request.Option) (*s3.CreateMultipartUploadOutput, error) {
+	_ = atomic.AddInt64(&d.CmpCalls, 1)
+	if d.CmpErr != nil {
+		return nil, d.CmpErr
+	}
+	return d.Cmp, nil
 }
 
 func (d *dummyAPI) HeadObjectWithContext(ctx aws.Context, in *s3.HeadObjectInput, opts ...request.Option) (*s3.HeadObjectOutput, error) {
