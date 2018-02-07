@@ -360,7 +360,7 @@ func TestStartMultipartError(t *testing.T) {
 	checkers.Equals(t, err.Error(), "mpboomCode: mpMsqBoom\ncaused by: boomboom")
 }
 
-func TestMultipartCopy(t *testing.T) {
+func TestMultipartCopyShortByte(t *testing.T) {
 	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
@@ -384,7 +384,42 @@ func TestMultipartCopy(t *testing.T) {
 		func(c *s3cp.Copier) {
 			c.MustSvcForRegion = func(s *string) s3cp.API {
 				return dummy.NewS3API(*s, func(d *dummy.S3API) {
-					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(s3cp.DefaultCopyPartSize * 2))}
+					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(s3cp.DefaultCopyPartSize*2 - 1))}
+				})
+			}
+		},
+	)
+
+	err := tut.Copy(in, func(c *s3cp.Copier) { c.Concurrency = 1 })
+	checkers.OK(t, err)
+	checkers.Equals(t, api.CmpCalls, int64(1))
+}
+
+func TestMultipartCopyLong(t *testing.T) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
+		d.Coo = &s3.CopyObjectOutput{
+			CopyObjectResult: &s3.CopyObjectResult{
+				ETag:         aws.String("etag"),
+				LastModified: aws.Time(time.Date(2005, 7, 1, 9, 30, 00, 00, time.UTC)),
+			},
+		}
+		d.Cmp = &s3.CreateMultipartUploadOutput{
+			UploadId: aws.String("an-id"),
+		}
+	},
+	)
+
+	in := s3cp.CopyInput{SourceRegion: aws.String("another-region"),
+		COI: s3.CopyObjectInput{
+			CopySource: aws.String("bucket/key"),
+		},
+	}
+
+	tut := s3cp.NewCopier(api,
+		func(c *s3cp.Copier) {
+			c.MustSvcForRegion = func(s *string) s3cp.API {
+				return dummy.NewS3API(*s, func(d *dummy.S3API) {
+					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(s3cp.DefaultCopyPartSize*10 + 1))}
 				})
 			}
 		},

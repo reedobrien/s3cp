@@ -175,6 +175,7 @@ type copier struct {
 	parts             []*s3.CompletedPart
 	results           chan copyPartResult
 	work              chan multipartCopyInput
+	wg                sync.WaitGroup
 }
 
 func (c *copier) copy() error {
@@ -263,7 +264,29 @@ func (c *copier) primeMultipart() {
 }
 
 func (c *copier) produceParts() {
+	var partNum int64
+	size := *c.contentLength
 
+	for size >= 0 {
+		offset := c.cfg.PartSize * partNum
+		endByte := offset + c.cfg.PartSize - 1
+		if endByte >= *c.contentLength {
+			endByte = *c.contentLength - 1
+		}
+		mci := multipartCopyInput{
+			PartNumber:      partNum + 1,
+			CopySourceRange: aws.String(fmt.Sprintf("bytes=%d-%d", offset, endByte)),
+			UploadID:        c.MultipartUploadID,
+		}
+		c.wg.Add(1)
+		c.work <- mci
+		partNum++
+		size -= c.cfg.PartSize
+		if size <= 0 {
+			break
+		}
+	}
+	close(c.work)
 }
 
 func (c *copier) singlePartCopyObject() error {

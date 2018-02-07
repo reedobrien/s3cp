@@ -1,9 +1,11 @@
 package s3cp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -164,4 +166,45 @@ func newCOI() *s3.CopyObjectInput {
 		// SSECustomerKeyMD5 *string
 		ServerSideEncryption: aws.String("AES256"),
 	}
+}
+
+func TestMultipartCopyPrivate(t *testing.T) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
+		d.Coo = &s3.CopyObjectOutput{
+			CopyObjectResult: &s3.CopyObjectResult{
+				ETag:         aws.String("etag"),
+				LastModified: aws.Time(time.Date(2005, 7, 1, 9, 30, 00, 00, time.UTC)),
+			},
+		}
+		d.Cmp = &s3.CreateMultipartUploadOutput{
+			UploadId: aws.String("an-id"),
+		}
+	},
+	)
+
+	in := CopyInput{
+		SourceRegion: aws.String("another-region"),
+		Size:         DefaultCopyPartSize*2 - 1,
+		COI: s3.CopyObjectInput{
+			CopySource: aws.String("bucket/key"),
+		},
+	}
+
+	cp := NewCopier(api)
+
+	tut := copier{
+		cfg: *cp,
+		ctx: context.Background(),
+		in:  in,
+	}
+
+	err := tut.copy()
+	checkers.OK(t, err)
+	checkers.Equals(t, api.CmpCalls, int64(1))
+	var count int
+	for v := range tut.work {
+		checkers.Equals(t, v.PartNumber, int64(count+1))
+		count++
+	}
+	checkers.Equals(t, count, 2)
 }
