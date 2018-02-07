@@ -2,13 +2,13 @@ package s3cp
 
 import (
 	"errors"
-	"sync/atomic"
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/reedobrien/checkers"
+	"github.com/reedobrien/s3cp/lib/dummy"
 )
 
 func TestSetGetErr(t *testing.T) {
@@ -34,7 +34,7 @@ func TestGetContentLengthProvided(t *testing.T) {
 }
 
 func TestGetContentLengthLookup(t *testing.T) {
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(6))}
 	})
 	tut := copier{
@@ -53,7 +53,7 @@ func TestGetContentLengthLookup(t *testing.T) {
 }
 
 func TestGetContentLengthLookupError(t *testing.T) {
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.HooErr = errors.New("boom")
 	})
 	tut := copier{
@@ -72,7 +72,7 @@ func TestGetContentLengthLookupError(t *testing.T) {
 
 func TestObjectInfoNoCopySource(t *testing.T) {
 	// TODO(ro) 2018-02-01 Can this happen?
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.HooErr = errors.New("boom")
 	})
 	tut := copier{
@@ -86,67 +86,82 @@ func TestObjectInfoNoCopySource(t *testing.T) {
 	checkers.Equals(t, tut.getErr().Error(), "got nil *string as CopySource")
 }
 
-func newDummyAPI(region string, opts ...func(*dummyAPI)) *dummyAPI {
-	if region == "" {
-		region = "default-region"
+func TestMultipartCopyInput(t *testing.T) {
+	coi := newCOI()
+	mci := multipartCopyInput{
+		PartNumber:      99,
+		CopySourceRange: aws.String("1000-1999"),
+		UploadID:        aws.String("AN-ID"),
 	}
+	upci := mci.FromCopyPartInput(coi)
 
-	d := &dummyAPI{region: aws.String(region)}
+	checkers.Equals(t, *upci.PartNumber, int64(99))
+	checkers.Equals(t, *upci.CopySourceRange, "1000-1999")
+	checkers.Equals(t, *upci.UploadId, "AN-ID")
 
-	for _, opt := range opts {
-		opt(d)
-	}
-	return d
+	checkers.Equals(t, *upci.Bucket, "bucket")
+	checkers.Equals(t, *upci.CopySource, "anotherbucket/foo/bar")
+
+	checkers.Assert(t,
+		upci.CopySourceIfMatch == nil,
+		fmt.Sprintf("got value %#v, wanted nil", upci.CopySourceIfMatch))
+	checkers.Assert(t,
+		upci.CopySourceIfModifiedSince == nil,
+		fmt.Sprintf("got value %#v, wanted nil", upci.CopySourceIfModifiedSince))
+	checkers.Equals(t, *upci.CopySourceIfNoneMatch, "lalkfkjdsa")
+	checkers.Assert(t,
+		upci.CopySourceIfUnmodifiedSince == nil,
+		fmt.Sprintf("got value %#v, wanted nil", upci.CopySourceIfUnmodifiedSince))
+	checkers.Equals(t, *upci.CopySourceSSECustomerAlgorithm, "AES256")
+	checkers.Assert(t,
+		upci.CopySourceSSECustomerKey == nil,
+		fmt.Sprintf("got value %#v, wanted nil", upci.CopySourceSSECustomerKey))
+	checkers.Assert(t,
+		upci.CopySourceSSECustomerKeyMD5 == nil,
+		fmt.Sprintf("got value %#v, wanted nil", upci.CopySourceSSECustomerKeyMD5))
+	checkers.Assert(t,
+		upci.RequestPayer == nil,
+		fmt.Sprintf("got value %#v, wanted nil", upci.RequestPayer))
+
+	checkers.Equals(t, *upci.Key, "foo/bar")
+
+	checkers.Equals(t, *upci.SSECustomerAlgorithm, "AES256")
+	checkers.Assert(t,
+		upci.SSECustomerKey == nil,
+		fmt.Sprintf("got value %#v, wanted nil", upci.SSECustomerKey))
+
+	checkers.Assert(t,
+		upci.SSECustomerKeyMD5 == nil,
+		fmt.Sprintf("got value %#v, wanted nil", upci.SSECustomerKeyMD5))
+
 }
 
-type dummyAPI struct {
-	region *string
-
-	Cmp      *s3.CreateMultipartUploadOutput
-	CmpCalls int64
-	CmpErr   error
-	CooErr   error
-	Coo      *s3.CopyObjectOutput
-	Hoo      *s3.HeadObjectOutput
-	HooErr   error
-	Doo      *s3.DeleteObjectOutput
-	DooCalls int64
-	DooErr   error
-}
-
-func (d *dummyAPI) CopyObjectWithContext(_ aws.Context, in *s3.CopyObjectInput, opts ...request.Option) (*s3.CopyObjectOutput, error) {
-	if d.CooErr != nil {
-		return nil, d.CooErr
+// newCOI creates a new s3.CopyObjectInput partially populated, for testing
+// multipartCopyInput.FromCopyPartInput.
+func newCOI() *s3.CopyObjectInput {
+	return &s3.CopyObjectInput{
+		ACL:                aws.String("public"),
+		Bucket:             aws.String("bucket"),
+		CacheControl:       aws.String("no-cache"),
+		ContentDisposition: aws.String(`Content-Disposition: attachment; filename="fname.ext`),
+		ContentEncoding:    aws.String("gzip"),
+		ContentLanguage:    aws.String("en-US"),
+		ContentType:        aws.String("application/pdf"),
+		CopySource:         aws.String("anotherbucket/foo/bar"),
+		// CopySourceIfMatch *string
+		// CopySourceIfModifiedSince *time.Time
+		CopySourceIfNoneMatch: aws.String("lalkfkjdsa"),
+		// CopySourceIfUnmodifiedSince *time.Time
+		CopySourceSSECustomerAlgorithm: aws.String("AES256"),
+		// CopySourceSSECustomerKey *string
+		// CopySourceSSECustomerKeyMD5 *string
+		Key:               aws.String("foo/bar"),
+		Metadata:          map[string]*string{"spam": aws.String("eggs")},
+		MetadataDirective: aws.String("REPLACE"),
+		// RequestPayer *string
+		SSECustomerAlgorithm: aws.String("AES256"),
+		// SSECustomerKey *string
+		// SSECustomerKeyMD5 *string
+		ServerSideEncryption: aws.String("AES256"),
 	}
-	return d.Coo, nil
-}
-
-func (d *dummyAPI) CreateMultipartUploadWithContext(_ aws.Context, in *s3.CreateMultipartUploadInput, ops ...request.Option) (*s3.CreateMultipartUploadOutput, error) {
-	_ = atomic.AddInt64(&d.CmpCalls, 1)
-	if d.CmpErr != nil {
-		return nil, d.CmpErr
-	}
-	return d.Cmp, nil
-}
-
-func (d *dummyAPI) HeadObjectWithContext(ctx aws.Context, in *s3.HeadObjectInput, opts ...request.Option) (*s3.HeadObjectOutput, error) {
-	if d.HooErr != nil {
-		return nil, d.HooErr
-	}
-	return d.Hoo, nil
-}
-
-func (d *dummyAPI) DeleteObjectWithContext(ctx aws.Context, in *s3.DeleteObjectInput, opts ...request.Option) (*s3.DeleteObjectOutput, error) {
-	_ = atomic.AddInt64(&d.DooCalls, 1)
-	if d.DooErr != nil {
-		return nil, d.DooErr
-	}
-	return d.Doo, nil
-}
-
-func (d *dummyAPI) Region() string {
-	if d.region == nil {
-		return ""
-	}
-	return *d.region
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -171,6 +172,9 @@ type copier struct {
 	contentLength     *int64
 	MultipartUploadID *string
 	in                CopyInput
+	parts             []*s3.CompletedPart
+	results           chan copyPartResult
+	work              chan multipartCopyInput
 }
 
 func (c *copier) copy() error {
@@ -200,37 +204,26 @@ func (c *copier) copy() error {
 		return err
 	}
 
+	c.primeMultipart()
+
+	go c.produceParts()
+
 	return nil
 }
 
-func (c *copier) startMultipart() error {
-	cmui := &s3.CreateMultipartUploadInput{
-		Bucket: c.in.COI.Bucket,
-		Key:    c.in.COI.Key,
+func (c *copier) deleteObject() {
+	if c.in.COI.CopySource == nil {
+		c.setErr(errors.New("delete requested but copy source is nil"))
+		return
 	}
-	resp, err := c.cfg.S3.CreateMultipartUploadWithContext(c.ctx, cmui)
+	source := strings.SplitN(*c.in.COI.CopySource, "/", 2)
+	_, err := c.cfg.SrcS3.DeleteObjectWithContext(c.ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(source[0]),
+		Key:    aws.String(source[1]),
+	})
 	if err != nil {
-		// TODO(ro) 2018-02-06 parse for awserr?
-		c.setErr(err)
-		return err
+		log.Printf("failed to delete %q: %q", *c.in.COI.CopySource, err)
 	}
-
-	c.MultipartUploadID = resp.UploadId
-	return nil
-}
-
-func (c *copier) singlePartCopyObject() error {
-	_, err := c.cfg.S3.CopyObjectWithContext(c.ctx, &c.in.COI)
-	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
-			log.Printf("failed to copy %q to %q: %s", *c.in.COI.CopySource, *c.in.COI.Bucket+"/"+*c.in.COI.Key, aerr)
-		} else {
-			log.Printf("failed to copy %q to %q: %s", *c.in.COI.CopySource, *c.in.COI.Bucket+"/"+*c.in.COI.Key, err)
-		}
-		return err
-	}
-
-	return nil
 }
 
 func (c *copier) getContentLength() {
@@ -262,20 +255,47 @@ func (c *copier) objectInfo(cs *string) (*s3.HeadObjectOutput, error) {
 	return info, nil
 }
 
-func (c *copier) deleteObject() {
-	if c.in.COI.CopySource == nil {
-		c.setErr(errors.New("delete requested but copy source is nil"))
-		return
-	}
-	source := strings.SplitN(*c.in.COI.CopySource, "/", 2)
-	_, err := c.cfg.SrcS3.DeleteObjectWithContext(c.ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(source[0]),
-		Key:    aws.String(source[1]),
-	})
-	if err != nil {
-		log.Printf("failed to delete %q: %q", *c.in.COI.CopySource, err)
-	}
+func (c *copier) primeMultipart() {
+	partCount := int(math.Ceil(float64(*c.contentLength) / float64(c.cfg.PartSize)))
+	c.parts = make([]*s3.CompletedPart, partCount)
+	c.results = make(chan copyPartResult, c.cfg.Concurrency)
+	c.work = make(chan multipartCopyInput, c.cfg.Concurrency)
 }
+
+func (c *copier) produceParts() {
+
+}
+
+func (c *copier) singlePartCopyObject() error {
+	_, err := c.cfg.S3.CopyObjectWithContext(c.ctx, &c.in.COI)
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			log.Printf("failed to copy %q to %q: %s", *c.in.COI.CopySource, *c.in.COI.Bucket+"/"+*c.in.COI.Key, aerr)
+		} else {
+			log.Printf("failed to copy %q to %q: %s", *c.in.COI.CopySource, *c.in.COI.Bucket+"/"+*c.in.COI.Key, err)
+		}
+		return err
+	}
+
+	return nil
+}
+
+func (c *copier) startMultipart() error {
+	cmui := &s3.CreateMultipartUploadInput{
+		Bucket: c.in.COI.Bucket,
+		Key:    c.in.COI.Key,
+	}
+	resp, err := c.cfg.S3.CreateMultipartUploadWithContext(c.ctx, cmui)
+	if err != nil {
+		// TODO(ro) 2018-02-06 parse for awserr?
+		c.setErr(err)
+		return err
+	}
+
+	c.MultipartUploadID = resp.UploadId
+	return nil
+}
+
 func (c *copier) getErr() error {
 	c.Lock()
 	defer c.Unlock()

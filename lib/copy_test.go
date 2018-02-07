@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,10 +16,11 @@ import (
 
 	"github.com/reedobrien/checkers"
 	s3cp "github.com/reedobrien/s3cp/lib"
+	"github.com/reedobrien/s3cp/lib/dummy"
 )
 
 func TestNewDefaults(t *testing.T) {
-	api := newDummyAPI("")
+	api := dummy.NewS3API("")
 	got := s3cp.NewCopier(api)
 
 	checkers.Equals(t, got.PartSize, int64(s3cp.DefaultCopyPartSize))
@@ -30,13 +30,13 @@ func TestNewDefaults(t *testing.T) {
 }
 
 func TestNewWithOptions(t *testing.T) {
-	api := newDummyAPI("")
+	api := dummy.NewS3API("")
 	got := s3cp.NewCopier(api,
 		func(c *s3cp.Copier) { c.PartSize = 100 },
 		func(c *s3cp.Copier) { c.Concurrency = 8 },
 		func(c *s3cp.Copier) { c.Timeout = time.Second },
 		func(c *s3cp.Copier) { c.LeavePartsOnError = true },
-		func(c *s3cp.Copier) { c.MustSvcForRegion = func(s *string) s3cp.API { return newDummyAPI(*s) } },
+		func(c *s3cp.Copier) { c.MustSvcForRegion = func(s *string) s3cp.API { return dummy.NewS3API(*s) } },
 	)
 
 	checkers.Equals(t, got.PartSize, int64(100))
@@ -46,7 +46,7 @@ func TestNewWithOptions(t *testing.T) {
 }
 
 func TestWithCopierRequestOptions(t *testing.T) {
-	api := newDummyAPI("a-region")
+	api := dummy.NewS3API("a-region")
 	tut := s3cp.NewCopier(api)
 
 	s3cp.WithCopierRequestOptions(
@@ -58,7 +58,7 @@ func TestWithCopierRequestOptions(t *testing.T) {
 }
 
 func TestCopyGetObjectHeadObjectError(t *testing.T) {
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
 				ETag:         aws.String("etag"),
@@ -78,7 +78,7 @@ func TestCopyGetObjectHeadObjectError(t *testing.T) {
 	tut := s3cp.NewCopier(api,
 		func(c *s3cp.Copier) {
 			c.MustSvcForRegion = func(s *string) s3cp.API {
-				return newDummyAPI(*s, func(d *dummyAPI) {
+				return dummy.NewS3API(*s, func(d *dummy.S3API) {
 					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(6))}
 					d.HooErr = errors.New("boom")
 				})
@@ -91,7 +91,7 @@ func TestCopyGetObjectHeadObjectError(t *testing.T) {
 }
 
 func TestCopyDeleteCalled(t *testing.T) {
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
 				ETag:         aws.String("etag"),
@@ -107,7 +107,7 @@ func TestCopyDeleteCalled(t *testing.T) {
 			CopySource: aws.String("bucket/key"),
 		},
 	}
-	api2 := newDummyAPI("api2-region", func(d *dummyAPI) {
+	api2 := dummy.NewS3API("api2-region", func(d *dummy.S3API) {
 		d.Doo = &s3.DeleteObjectOutput{
 			DeleteMarker: aws.Bool(false),
 		}
@@ -135,7 +135,7 @@ func TestCopyDeleteError(t *testing.T) {
 	defer func() {
 		log.SetOutput(os.Stderr)
 	}()
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
 				ETag:         aws.String("etag"),
@@ -151,7 +151,7 @@ func TestCopyDeleteError(t *testing.T) {
 			CopySource: aws.String("bucket/key"),
 		},
 	}
-	api2 := newDummyAPI("api2-region", func(d *dummyAPI) {
+	api2 := dummy.NewS3API("api2-region", func(d *dummy.S3API) {
 		d.DooErr = errors.New("delete boom")
 		d.Doo = &s3.DeleteObjectOutput{
 			DeleteMarker: aws.Bool(false),
@@ -179,7 +179,7 @@ func TestCopyDeleteError(t *testing.T) {
 }
 
 func TestCopyDeleteMissingSourceError(t *testing.T) {
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
 				ETag:         aws.String("etag"),
@@ -193,7 +193,7 @@ func TestCopyDeleteMissingSourceError(t *testing.T) {
 		Size:   68,
 		Delete: true,
 	}
-	api2 := newDummyAPI("api2-region", func(d *dummyAPI) {
+	api2 := dummy.NewS3API("api2-region", func(d *dummy.S3API) {
 		d.DooErr = errors.New("delete boom")
 		d.Doo = &s3.DeleteObjectOutput{
 			DeleteMarker: aws.Bool(false),
@@ -216,7 +216,7 @@ func TestCopyDeleteMissingSourceError(t *testing.T) {
 }
 
 func TestSinglePartCopy(t *testing.T) {
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
 				ETag:         aws.String("etag"),
@@ -235,7 +235,7 @@ func TestSinglePartCopy(t *testing.T) {
 	tut := s3cp.NewCopier(api,
 		func(c *s3cp.Copier) {
 			c.MustSvcForRegion = func(s *string) s3cp.API {
-				return newDummyAPI(*s, func(d *dummyAPI) {
+				return dummy.NewS3API(*s, func(d *dummy.S3API) {
 					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(6))}
 				})
 			}
@@ -252,7 +252,7 @@ func TestSinglePartCopyAWSErr(t *testing.T) {
 	defer func() {
 		log.SetOutput(os.Stderr)
 	}()
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
 				ETag:         aws.String("etag"),
@@ -274,7 +274,7 @@ func TestSinglePartCopyAWSErr(t *testing.T) {
 	tut := s3cp.NewCopier(api,
 		func(c *s3cp.Copier) {
 			c.MustSvcForRegion = func(s *string) s3cp.API {
-				return newDummyAPI(*s, func(d *dummyAPI) {
+				return dummy.NewS3API(*s, func(d *dummy.S3API) {
 					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(6))}
 				})
 			}
@@ -292,7 +292,7 @@ func TestSinglePartCopyError(t *testing.T) {
 	defer func() {
 		log.SetOutput(os.Stderr)
 	}()
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
 				ETag:         aws.String("etag"),
@@ -314,7 +314,7 @@ func TestSinglePartCopyError(t *testing.T) {
 	tut := s3cp.NewCopier(api,
 		func(c *s3cp.Copier) {
 			c.MustSvcForRegion = func(s *string) s3cp.API {
-				return newDummyAPI(*s, func(d *dummyAPI) {
+				return dummy.NewS3API(*s, func(d *dummy.S3API) {
 					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(6))}
 				})
 			}
@@ -327,7 +327,7 @@ func TestSinglePartCopyError(t *testing.T) {
 }
 
 func TestStartMultipartError(t *testing.T) {
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
 				ETag:         aws.String("etag"),
@@ -347,7 +347,7 @@ func TestStartMultipartError(t *testing.T) {
 	tut := s3cp.NewCopier(api,
 		func(c *s3cp.Copier) {
 			c.MustSvcForRegion = func(s *string) s3cp.API {
-				return newDummyAPI(*s, func(d *dummyAPI) {
+				return dummy.NewS3API(*s, func(d *dummy.S3API) {
 					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(s3cp.DefaultCopyPartSize * 2))}
 				})
 			}
@@ -361,7 +361,7 @@ func TestStartMultipartError(t *testing.T) {
 }
 
 func TestMultipartCopy(t *testing.T) {
-	api := newDummyAPI("", func(d *dummyAPI) {
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
 				ETag:         aws.String("etag"),
@@ -383,7 +383,7 @@ func TestMultipartCopy(t *testing.T) {
 	tut := s3cp.NewCopier(api,
 		func(c *s3cp.Copier) {
 			c.MustSvcForRegion = func(s *string) s3cp.API {
-				return newDummyAPI(*s, func(d *dummyAPI) {
+				return dummy.NewS3API(*s, func(d *dummy.S3API) {
 					d.Hoo = &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(s3cp.DefaultCopyPartSize * 2))}
 				})
 			}
@@ -392,69 +392,4 @@ func TestMultipartCopy(t *testing.T) {
 
 	err := tut.Copy(in, func(c *s3cp.Copier) { c.Concurrency = 1 })
 	checkers.OK(t, err)
-}
-
-func newDummyAPI(region string, opts ...func(*dummyAPI)) *dummyAPI {
-	if region == "" {
-		region = "default-region"
-	}
-
-	d := &dummyAPI{region: aws.String(region)}
-
-	for _, opt := range opts {
-		opt(d)
-	}
-	return d
-}
-
-type dummyAPI struct {
-	region *string
-
-	Cmp      *s3.CreateMultipartUploadOutput
-	CmpCalls int64
-	CmpErr   error
-	CooErr   error
-	Coo      *s3.CopyObjectOutput
-	Hoo      *s3.HeadObjectOutput
-	HooErr   error
-	Doo      *s3.DeleteObjectOutput
-	DooCalls int64
-	DooErr   error
-}
-
-func (d *dummyAPI) CopyObjectWithContext(_ aws.Context, in *s3.CopyObjectInput, opts ...request.Option) (*s3.CopyObjectOutput, error) {
-	if d.CooErr != nil {
-		return nil, d.CooErr
-	}
-	return d.Coo, nil
-}
-
-func (d *dummyAPI) CreateMultipartUploadWithContext(_ aws.Context, in *s3.CreateMultipartUploadInput, ops ...request.Option) (*s3.CreateMultipartUploadOutput, error) {
-	_ = atomic.AddInt64(&d.CmpCalls, 1)
-	if d.CmpErr != nil {
-		return nil, d.CmpErr
-	}
-	return d.Cmp, nil
-}
-
-func (d *dummyAPI) HeadObjectWithContext(ctx aws.Context, in *s3.HeadObjectInput, opts ...request.Option) (*s3.HeadObjectOutput, error) {
-	if d.HooErr != nil {
-		return nil, d.HooErr
-	}
-	return d.Hoo, nil
-}
-
-func (d *dummyAPI) DeleteObjectWithContext(ctx aws.Context, in *s3.DeleteObjectInput, opts ...request.Option) (*s3.DeleteObjectOutput, error) {
-	_ = atomic.AddInt64(&d.DooCalls, 1)
-	if d.DooErr != nil {
-		return nil, d.DooErr
-	}
-	return d.Doo, nil
-}
-
-func (d *dummyAPI) Region() string {
-	if d.region == nil {
-		return ""
-	}
-	return *d.region
 }
