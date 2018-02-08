@@ -6,7 +6,7 @@ import (
 )
 
 type copyPartResult struct {
-	Part int64
+	PartNumber int64
 	*s3.CopyPartResult
 }
 

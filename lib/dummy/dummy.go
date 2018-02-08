@@ -36,6 +36,9 @@ type S3API struct {
 	Doo      *s3.DeleteObjectOutput
 	DooCalls int64
 	DooErr   error
+	Upc      *s3.UploadPartCopyOutput
+	UpcErr   error
+	UpcCalls int64
 }
 
 // CopyObjectWithContext is a mock method.
@@ -70,6 +73,15 @@ func (d *S3API) DeleteObjectWithContext(ctx aws.Context, in *s3.DeleteObjectInpu
 		return nil, d.DooErr
 	}
 	return d.Doo, nil
+}
+
+// UploadPartCopyWithContext is a mock method.
+func (d *S3API) UploadPartCopyWithContext(ctx aws.Context, in *s3.UploadPartCopyInput, opts ...request.Option) (*s3.UploadPartCopyOutput, error) {
+	_ = atomic.AddInt64(&d.UpcCalls, 1)
+	if d.UpcErr != nil {
+		return nil, d.UpcErr
+	}
+	return d.Upc, nil
 }
 
 // Region is a mock method.

@@ -16,6 +16,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
+func init() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+}
+
 const (
 	// DefaultCopyPartSize declares the default size of chunks to get copied.
 	// It is currently set dumbly to 500MB. So that the maximum object size
@@ -49,6 +53,7 @@ type API interface {
 	// AbortMultipartUploadWithContext(aws.Context, *s3.AbortMultipartUploadInput, ...request.Option) (*s3.AbortMultipartUploadOutput, error)
 	CreateMultipartUploadWithContext(aws.Context, *s3.CreateMultipartUploadInput, ...request.Option) (*s3.CreateMultipartUploadOutput, error)
 	// CompleteMultipartUploadWithContext(aws.Context, *s3.CompleteMultipartUploadInput, ...request.Option) (*s3.CompleteMultipartUploadOutput, error)
+	UploadPartCopyWithContext(aws.Context, *s3.UploadPartCopyInput, ...request.Option) (*s3.UploadPartCopyOutput, error)
 }
 
 // CopyInput is a parameter container for Copier.Copy.
@@ -209,7 +214,40 @@ func (c *copier) copy() error {
 
 	go c.produceParts()
 
-	return nil
+	for i := 0; i < c.cfg.Concurrency; i++ {
+		go c.copyParts()
+	}
+
+	// c.wg.Wait()
+	return c.getErr()
+}
+
+func (c *copier) copyParts() {
+	var err error
+	var resp *s3.UploadPartCopyOutput
+	for mci := range c.work {
+		upci := mci.FromCopyPartInput(&c.in.COI)
+		for retry := 0; retry <= c.maxRetries; retry++ {
+			resp, err = c.cfg.S3.UploadPartCopyWithContext(c.ctx, upci)
+			if err != nil {
+
+				log.Printf("Error: %s\n Part: %d\n Input %#v\n",
+					err,
+					mci.PartNumber,
+					*upci)
+				continue
+			}
+			c.results <- copyPartResult{
+				PartNumber:     mci.PartNumber,
+				CopyPartResult: resp.CopyPartResult,
+			}
+			break
+		}
+		if err != nil {
+			c.setErr(err)
+		}
+		// c.wg.Done()
+	}
 }
 
 func (c *copier) deleteObject() {

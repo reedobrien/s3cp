@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/reedobrien/checkers"
 	"github.com/reedobrien/s3cp/lib/dummy"
@@ -179,6 +181,11 @@ func TestMultipartCopyPrivate(t *testing.T) {
 		d.Cmp = &s3.CreateMultipartUploadOutput{
 			UploadId: aws.String("an-id"),
 		}
+		d.Upc = &s3.UploadPartCopyOutput{
+			CopyPartResult: &s3.CopyPartResult{
+				ETag: aws.String("someetag"),
+			},
+		}
 	},
 	)
 
@@ -190,7 +197,7 @@ func TestMultipartCopyPrivate(t *testing.T) {
 		},
 	}
 
-	cp := NewCopier(api)
+	cp := NewCopier(api, func(c *Copier) { c.Concurrency = 1 })
 
 	tut := copier{
 		cfg: *cp,
@@ -201,10 +208,63 @@ func TestMultipartCopyPrivate(t *testing.T) {
 	err := tut.copy()
 	checkers.OK(t, err)
 	checkers.Equals(t, api.CmpCalls, int64(1))
-	var count int
-	for v := range tut.work {
-		checkers.Equals(t, v.PartNumber, int64(count+1))
-		count++
+}
+
+func TestMultipartCopyPrivateError(t *testing.T) {
+	logging := make(chan string, 100)
+	l := dummy.NewLogOutput(logging)
+	defer l.Reset()
+
+	api := dummy.NewS3API("", func(d *dummy.S3API) {
+		d.Coo = &s3.CopyObjectOutput{
+			CopyObjectResult: &s3.CopyObjectResult{
+				ETag:         aws.String("etag"),
+				LastModified: aws.Time(time.Date(2005, 7, 1, 9, 30, 00, 00, time.UTC)),
+			},
+		}
+		d.Cmp = &s3.CreateMultipartUploadOutput{
+			UploadId: aws.String("an-id"),
+		}
+		d.Upc = &s3.UploadPartCopyOutput{
+			CopyPartResult: &s3.CopyPartResult{
+				ETag: aws.String("someetag"),
+			},
+		}
+		d.UpcErr = awserr.New("upcBoomCode", "upcBoomMsg", errors.New("upcBboom"))
+	},
+	)
+
+	in := CopyInput{
+		SourceRegion: aws.String("another-region"),
+		Size:         DefaultCopyPartSize*2 - 1,
+		COI: s3.CopyObjectInput{
+			CopySource: aws.String("bucket/key"),
+		},
 	}
-	checkers.Equals(t, count, 2)
+
+	cp := NewCopier(api, func(c *Copier) { c.Concurrency = 1 })
+
+	tut := copier{
+		cfg: *cp,
+		ctx: context.Background(),
+		in:  in,
+	}
+
+	err := tut.copy()
+	checkers.OK(t, err)
+	checkers.Equals(t, api.CmpCalls, int64(1))
+	var out string
+	func() {
+		for {
+			select {
+			case s := <-logging:
+				out = out + s
+			case <-time.After(10 * time.Millisecond):
+				return
+			}
+		}
+	}()
+	checkers.Assert(t, strings.Contains(out, "Part: 1"), "missing part 1")
+	checkers.Assert(t, strings.Contains(out, "Part: 2"), "missing part 2")
+	checkers.Equals(t, api.UpcCalls, int64(2))
 }

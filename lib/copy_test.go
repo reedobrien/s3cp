@@ -1,10 +1,7 @@
 package s3cp_test
 
 import (
-	"bytes"
 	"errors"
-	"log"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -130,11 +127,10 @@ func TestCopyDeleteCalled(t *testing.T) {
 }
 
 func TestCopyDeleteError(t *testing.T) {
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer func() {
-		log.SetOutput(os.Stderr)
-	}()
+	logging := make(chan string, 10)
+	l := dummy.NewLogOutput(logging)
+	defer l.Reset()
+
 	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
@@ -173,7 +169,7 @@ func TestCopyDeleteError(t *testing.T) {
 	checkers.Equals(t, api2.DooCalls, int64(1))
 	checkers.Assert(t,
 		strings.HasSuffix(
-			buf.String(),
+			<-logging,
 			"failed to delete \"bucket/key\": \"delete boom\"\n"),
 		"missing expected log message")
 }
@@ -247,11 +243,10 @@ func TestSinglePartCopy(t *testing.T) {
 }
 
 func TestSinglePartCopyAWSErr(t *testing.T) {
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer func() {
-		log.SetOutput(os.Stderr)
-	}()
+	logging := make(chan string, 100)
+	l := dummy.NewLogOutput(logging)
+	defer l.Reset()
+
 	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
@@ -283,15 +278,15 @@ func TestSinglePartCopyAWSErr(t *testing.T) {
 
 	err := tut.Copy(in, func(c *s3cp.Copier) { c.Concurrency = 1 })
 	checkers.Equals(t, err.Error(), "boomCode: boomMsg\ncaused by: boom")
-	checkers.Assert(t, strings.HasSuffix(buf.String(), "failed to copy \"bucket/key\" to \"abucket/akey\": boomCode: boomMsg\ncaused by: boom\n"), "missing expected log message")
+
+	checkers.Assert(t, strings.HasSuffix(<-logging, "failed to copy \"bucket/key\" to \"abucket/akey\": boomCode: boomMsg\ncaused by: boom\n"), "missing expected log message")
 }
 
 func TestSinglePartCopyError(t *testing.T) {
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer func() {
-		log.SetOutput(os.Stderr)
-	}()
+	logging := make(chan string, 100)
+	l := dummy.NewLogOutput(logging)
+	defer l.Reset()
+
 	api := dummy.NewS3API("", func(d *dummy.S3API) {
 		d.Coo = &s3.CopyObjectOutput{
 			CopyObjectResult: &s3.CopyObjectResult{
@@ -323,7 +318,7 @@ func TestSinglePartCopyError(t *testing.T) {
 
 	err := tut.Copy(in, func(c *s3cp.Copier) { c.Concurrency = 1 })
 	checkers.Equals(t, err.Error(), "boom")
-	checkers.Assert(t, strings.HasSuffix(buf.String(), "failed to copy \"bucket/key\" to \"abucket/akey\": boom\n"), "missing expected log message")
+	checkers.Assert(t, strings.HasSuffix(<-logging, "failed to copy \"bucket/key\" to \"abucket/akey\": boom\n"), "missing expected log message")
 }
 
 func TestStartMultipartError(t *testing.T) {
@@ -371,6 +366,12 @@ func TestMultipartCopyShortByte(t *testing.T) {
 		d.Cmp = &s3.CreateMultipartUploadOutput{
 			UploadId: aws.String("an-id"),
 		}
+		d.Upc = &s3.UploadPartCopyOutput{
+			CopyPartResult: &s3.CopyPartResult{
+				ETag: aws.String("someetag"),
+			},
+		}
+
 	},
 	)
 
@@ -406,6 +407,12 @@ func TestMultipartCopyLong(t *testing.T) {
 		d.Cmp = &s3.CreateMultipartUploadOutput{
 			UploadId: aws.String("an-id"),
 		}
+		d.Upc = &s3.UploadPartCopyOutput{
+			CopyPartResult: &s3.CopyPartResult{
+				ETag: aws.String("someetag"),
+			},
+		}
+
 	},
 	)
 
