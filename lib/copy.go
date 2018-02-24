@@ -411,7 +411,7 @@ func (c *copier) startMultipart() error {
 
 func (c *copier) wait() {
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	done := make(chan struct{})
 	go func() {
 		c.wg.Wait()
