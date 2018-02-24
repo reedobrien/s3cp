@@ -26,19 +26,22 @@ func NewS3API(region string, opts ...func(*S3API)) *S3API {
 type S3API struct {
 	region *string
 
-	Cmp      *s3.CreateMultipartUploadOutput
-	CmpCalls int64
-	CmpErr   error
-	CooErr   error
-	Coo      *s3.CopyObjectOutput
-	Hoo      *s3.HeadObjectOutput
-	HooErr   error
-	Doo      *s3.DeleteObjectOutput
-	DooCalls int64
-	DooErr   error
-	Upc      *s3.UploadPartCopyOutput
-	UpcErr   error
-	UpcCalls int64
+	Cmp       *s3.CreateMultipartUploadOutput
+	CmpCalls  int64
+	CmpErr    error
+	CooErr    error
+	Coo       *s3.CopyObjectOutput
+	Hoo       *s3.HeadObjectOutput
+	HooErr    error
+	Doo       *s3.DeleteObjectOutput
+	DooCalls  int64
+	DooErr    error
+	Upc       *s3.UploadPartCopyOutput
+	UpcErr    error
+	UpcCalls  int64
+	Cmpu      *s3.CompleteMultipartUploadOutput
+	CmpuErr   error
+	CmpuCalls int64
 }
 
 // CopyObjectWithContext is a mock method.
@@ -82,6 +85,16 @@ func (d *S3API) UploadPartCopyWithContext(ctx aws.Context, in *s3.UploadPartCopy
 		return nil, d.UpcErr
 	}
 	return d.Upc, nil
+}
+
+// CompleteMultipartUploadWithContext is a mock method.
+func (d *S3API) CompleteMultipartUploadWithContext(ctx aws.Context, in *s3.CompleteMultipartUploadInput, opts ...request.Option) (*s3.CompleteMultipartUploadOutput, error) {
+	_ = atomic.AddInt64(&d.CmpuCalls, 1)
+	if d.CmpuErr != nil {
+		return nil, d.CmpuErr
+	}
+	return d.Cmpu, nil
+
 }
 
 // Region is a mock method.

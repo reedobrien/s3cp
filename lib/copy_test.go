@@ -122,7 +122,6 @@ func TestCopyDeleteCalled(t *testing.T) {
 
 	err := tut.Copy(in, func(c *s3cp.Copier) { c.Concurrency = 1 })
 	checkers.OK(t, err)
-	time.Sleep(time.Second)
 	checkers.Equals(t, api2.DooCalls, int64(1))
 }
 

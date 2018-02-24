@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -52,7 +55,7 @@ type API interface {
 	HeadObjectWithContext(aws.Context, *s3.HeadObjectInput, ...request.Option) (*s3.HeadObjectOutput, error)
 	// AbortMultipartUploadWithContext(aws.Context, *s3.AbortMultipartUploadInput, ...request.Option) (*s3.AbortMultipartUploadOutput, error)
 	CreateMultipartUploadWithContext(aws.Context, *s3.CreateMultipartUploadInput, ...request.Option) (*s3.CreateMultipartUploadOutput, error)
-	// CompleteMultipartUploadWithContext(aws.Context, *s3.CompleteMultipartUploadInput, ...request.Option) (*s3.CompleteMultipartUploadOutput, error)
+	CompleteMultipartUploadWithContext(aws.Context, *s3.CompleteMultipartUploadInput, ...request.Option) (*s3.CompleteMultipartUploadOutput, error)
 	UploadPartCopyWithContext(aws.Context, *s3.UploadPartCopyInput, ...request.Option) (*s3.UploadPartCopyOutput, error)
 }
 
@@ -193,7 +196,7 @@ func (c *copier) copy() error {
 	// was no error copying.
 	if c.in.Delete {
 		defer func() {
-			if c.err != nil {
+			if c.getErr() != nil {
 				return
 			}
 			c.deleteObject()
@@ -212,25 +215,71 @@ func (c *copier) copy() error {
 
 	c.primeMultipart()
 
+	c.wg.Add(1)
 	go c.produceParts()
 
 	for i := 0; i < c.cfg.Concurrency; i++ {
 		go c.copyParts()
 	}
 
-	// c.wg.Wait()
-	return c.getErr()
+	c.wg.Add(1)
+	go c.collect()
+
+	c.wait()
+	return c.complete()
+}
+
+func (c *copier) collect() {
+	var received int
+	defer c.wg.Done()
+
+	for {
+		select {
+		case r := <-c.results:
+			c.parts[r.PartNumber-1] = &s3.CompletedPart{
+				ETag:       r.CopyPartResult.ETag,
+				PartNumber: aws.Int64(r.PartNumber)}
+			received++
+		case <-time.After(time.Millisecond * 400):
+			if received == len(c.parts) {
+				close(c.results)
+				return
+			}
+			if c.getErr() != nil {
+				return
+			}
+		}
+	}
+}
+
+func (c *copier) complete() error {
+	cmui := &s3.CompleteMultipartUploadInput{
+		Bucket:   c.in.COI.Bucket,
+		Key:      c.in.COI.Key,
+		UploadId: c.MultipartUploadID,
+		MultipartUpload: &s3.CompletedMultipartUpload{
+			Parts: c.parts,
+		},
+	}
+	_, err := c.cfg.S3.CompleteMultipartUploadWithContext(c.ctx, cmui)
+	if err != nil {
+		log.Printf("failed to complete copy for %s: %s\n",
+			*c.in.COI.CopySource, err)
+		return err
+	}
+
+	return nil
 }
 
 func (c *copier) copyParts() {
 	var err error
 	var resp *s3.UploadPartCopyOutput
+	var copied int
 	for mci := range c.work {
 		upci := mci.FromCopyPartInput(&c.in.COI)
 		for retry := 0; retry <= c.maxRetries; retry++ {
 			resp, err = c.cfg.S3.UploadPartCopyWithContext(c.ctx, upci)
 			if err != nil {
-
 				log.Printf("Error: %s\n Part: %d\n Input %#v\n",
 					err,
 					mci.PartNumber,
@@ -241,12 +290,15 @@ func (c *copier) copyParts() {
 				PartNumber:     mci.PartNumber,
 				CopyPartResult: resp.CopyPartResult,
 			}
+			copied++
 			break
 		}
+
 		if err != nil {
-			c.setErr(err)
+			if copied != len(c.parts) {
+				c.setErr(err)
+			}
 		}
-		// c.wg.Done()
 	}
 }
 
@@ -294,14 +346,8 @@ func (c *copier) objectInfo(cs *string) (*s3.HeadObjectOutput, error) {
 	return info, nil
 }
 
-func (c *copier) primeMultipart() {
-	partCount := int(math.Ceil(float64(*c.contentLength) / float64(c.cfg.PartSize)))
-	c.parts = make([]*s3.CompletedPart, partCount)
-	c.results = make(chan copyPartResult, c.cfg.Concurrency)
-	c.work = make(chan multipartCopyInput, c.cfg.Concurrency)
-}
-
 func (c *copier) produceParts() {
+	defer c.wg.Done()
 	var partNum int64
 	size := *c.contentLength
 
@@ -316,7 +362,6 @@ func (c *copier) produceParts() {
 			CopySourceRange: aws.String(fmt.Sprintf("bytes=%d-%d", offset, endByte)),
 			UploadID:        c.MultipartUploadID,
 		}
-		c.wg.Add(1)
 		c.work <- mci
 		partNum++
 		size -= c.cfg.PartSize
@@ -325,6 +370,13 @@ func (c *copier) produceParts() {
 		}
 	}
 	close(c.work)
+}
+
+func (c *copier) primeMultipart() {
+	partCount := int(math.Ceil(float64(*c.contentLength) / float64(c.cfg.PartSize)))
+	c.parts = make([]*s3.CompletedPart, partCount)
+	c.results = make(chan copyPartResult, c.cfg.Concurrency)
+	c.work = make(chan multipartCopyInput, c.cfg.Concurrency)
 }
 
 func (c *copier) singlePartCopyObject() error {
@@ -355,6 +407,29 @@ func (c *copier) startMultipart() error {
 
 	c.MultipartUploadID = resp.UploadId
 	return nil
+}
+
+func (c *copier) wait() {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+		return
+	case sig := <-sigs:
+		c.cancel()
+		log.Printf("Caught signal %s\n", sig)
+		os.Exit(0)
+	case <-time.After(c.cfg.Timeout):
+		c.cancel()
+		log.Printf("Copy timed out in %s seconds\n", c.cfg.Timeout)
+		os.Exit(1)
+	}
 }
 
 func (c *copier) getErr() error {

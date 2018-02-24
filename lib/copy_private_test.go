@@ -208,6 +208,19 @@ func TestMultipartCopyPrivate(t *testing.T) {
 	err := tut.copy()
 	checkers.OK(t, err)
 	checkers.Equals(t, api.CmpCalls, int64(1))
+	checkers.Equals(t, len(tut.parts), 2)
+
+	var want = &s3.CompletedPart{
+		PartNumber: aws.Int64(1),
+		ETag:       aws.String("someetag"),
+	}
+
+	checkers.Equals(t, tut.parts[0], want)
+	checkers.Equals(t, tut.parts[1], &s3.CompletedPart{
+		PartNumber: aws.Int64(2),
+		ETag:       aws.String("someetag")})
+
+	checkers.Equals(t, api.CmpuCalls, int64(1))
 }
 
 func TestMultipartCopyPrivateError(t *testing.T) {
@@ -253,6 +266,7 @@ func TestMultipartCopyPrivateError(t *testing.T) {
 	err := tut.copy()
 	checkers.OK(t, err)
 	checkers.Equals(t, api.CmpCalls, int64(1))
+
 	var out string
 	func() {
 		for {
