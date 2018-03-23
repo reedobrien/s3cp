@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/request"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
@@ -84,10 +85,11 @@ type CopyInput struct {
 // one s3 location to another.
 func NewCopier(api API, opts ...func(*Copier)) *Copier {
 	c := &Copier{
-		PartSize:    DefaultCopyPartSize,
-		Timeout:     DefaultCopyTimeout,
-		Concurrency: DefaultCopyConcurrency,
-		S3:          api,
+		PartSize:         DefaultCopyPartSize,
+		Timeout:          DefaultCopyTimeout,
+		Concurrency:      DefaultCopyConcurrency,
+		S3:               api,
+		MustSvcForRegion: mustSvcForRegion,
 	}
 
 	for _, opt := range opts {
@@ -95,6 +97,14 @@ func NewCopier(api API, opts ...func(*Copier)) *Copier {
 	}
 
 	return c
+}
+
+func mustSvcForRegion(r *string) API {
+	return s3.New(
+		session.Must(
+			session.NewSession(
+				&aws.Config{Region: r},
+			)))
 }
 
 // WithCopierRequestOptions appends to the Copier's API requst options.
@@ -395,8 +405,29 @@ func (c *copier) singlePartCopyObject() error {
 
 func (c *copier) startMultipart() error {
 	cmui := &s3.CreateMultipartUploadInput{
-		Bucket: c.in.COI.Bucket,
-		Key:    c.in.COI.Key,
+		ACL:                     c.in.COI.ACL,
+		Bucket:                  c.in.COI.Bucket,
+		CacheControl:            c.in.COI.CacheControl,
+		ContentDisposition:      c.in.COI.ContentDisposition,
+		ContentEncoding:         c.in.COI.ContentEncoding,
+		ContentLanguage:         c.in.COI.ContentLanguage,
+		ContentType:             c.in.COI.ContentType,
+		Expires:                 c.in.COI.Expires,
+		GrantFullControl:        c.in.COI.GrantFullControl,
+		GrantRead:               c.in.COI.GrantRead,
+		GrantReadACP:            c.in.COI.GrantReadACP,
+		GrantWriteACP:           c.in.COI.GrantWriteACP,
+		Key:                     c.in.COI.Key,
+		Metadata:                c.in.COI.Metadata,
+		RequestPayer:            c.in.COI.RequestPayer,
+		SSECustomerAlgorithm:    c.in.COI.CopySourceSSECustomerAlgorithm,
+		SSECustomerKey:          c.in.COI.SSECustomerKey,
+		SSECustomerKeyMD5:       c.in.COI.SSECustomerKeyMD5,
+		SSEKMSKeyId:             c.in.COI.SSEKMSKeyId,
+		ServerSideEncryption:    c.in.COI.ServerSideEncryption,
+		StorageClass:            c.in.COI.StorageClass,
+		Tagging:                 c.in.COI.Tagging,
+		WebsiteRedirectLocation: c.in.COI.WebsiteRedirectLocation,
 	}
 	resp, err := c.cfg.S3.CreateMultipartUploadWithContext(c.ctx, cmui)
 	if err != nil {
